@@ -56,15 +56,15 @@ class TunnelManager: ObservableObject {
     }()
 
     private var tunnelDeviceIp: String {
-        UserDefaults.standard.string(forKey: "TunnelDeviceIP") ?? "10.7.0.0"
+        UserDefaults.standard.string(forKey: "TunnelDeviceIP") ?? TunnelConstants.defaultDeviceIP
     }
 
     private var tunnelFakeIp: String {
-        UserDefaults.standard.string(forKey: "TunnelFakeIP") ?? "10.7.0.1"
+        UserDefaults.standard.string(forKey: "TunnelFakeIP") ?? TunnelConstants.defaultFakeIP
     }
 
     private var tunnelSubnetMask: String {
-        UserDefaults.standard.string(forKey: "TunnelSubnetMask") ?? "255.255.255.0"
+        UserDefaults.standard.string(forKey: "TunnelSubnetMask") ?? TunnelConstants.defaultSubnetMask
     }
 
     private var tunnelBundleId: String {
@@ -281,7 +281,7 @@ class TunnelManager: ObservableObject {
             let onDemandRule = NEOnDemandRuleEvaluateConnection()
             onDemandRule.interfaceTypeMatch = .any
             onDemandRule.connectionRules = [NEEvaluateConnectionRule(
-                matchDomains: ["10.7.0.0", "10.7.0.1"],
+                matchDomains: [self.tunnelDeviceIp, self.tunnelFakeIp],
                 andAction: .connectIfNeeded
             )]
 
@@ -539,6 +539,46 @@ class TunnelManager: ObservableObject {
         UserDefaults.standard.removeObject(forKey: "ShouldStartLocalDevVPNAfterDisconnect")
     }
 
+    func updateConfigAndRestart(shouldRestart: Bool) {
+        if isSimulator { return }
+        
+        guard let manager = vpnManager else { return }
+        
+        manager.loadFromPreferences { [weak self] error in
+            guard let self = self else { return }
+            if let error = error {
+                VPNLogger.shared.log("Error loading preferences for update: \(error.localizedDescription)")
+                return
+            }
+            
+            let onDemandRule = NEOnDemandRuleEvaluateConnection()
+            onDemandRule.interfaceTypeMatch = .any
+            onDemandRule.connectionRules = [NEEvaluateConnectionRule(
+                matchDomains: [self.tunnelDeviceIp, self.tunnelFakeIp],
+                andAction: .connectIfNeeded
+            )]
+            manager.onDemandRules = [onDemandRule]
+            manager.isOnDemandEnabled = true
+            manager.isEnabled = true
+            
+            manager.saveToPreferences { [weak self] error in
+                guard let self = self else { return }
+                if let error = error {
+                    VPNLogger.shared.log("Error saving updated preferences: \(error.localizedDescription)")
+                    return
+                }
+                
+                VPNLogger.shared.log("LocalDevVPN configuration updated successfully in preferences")
+                
+                if shouldRestart {
+                    VPNLogger.shared.log("Restarting LocalDevVPN tunnel to apply new configuration...")
+                    UserDefaults.standard.set(true, forKey: "ShouldStartLocalDevVPNAfterDisconnect")
+                    manager.connection.stopVPNTunnel()
+                }
+            }
+        }
+    }
+
     func handleVPNStatusChange(notification: Notification) {
         guard let connection = notification.object as? NEVPNConnection else { return }
 
@@ -782,7 +822,7 @@ extension View {
 
 struct StatusOverviewCard: View {
     @StateObject private var tunnelManager = TunnelManager.shared
-    @AppStorage("TunnelDeviceIP") private var deviceIP = "10.7.0.0"
+    @AppStorage("TunnelDeviceIP") private var deviceIP = TunnelConstants.defaultDeviceIP
 
     var body: some View {
         DashboardCard {
@@ -979,9 +1019,9 @@ struct ConnectionButton: View {
 
 struct ConnectionStatsView: View {
     @StateObject private var tunnelManager = TunnelManager.shared
-    @AppStorage("TunnelDeviceIP") private var deviceIP = "10.7.0.0"
-    @AppStorage("TunnelFakeIP") private var fakeIP = "10.7.0.1"
-    @AppStorage("TunnelSubnetMask") private var subnetMask = "255.255.255.0"
+    @AppStorage("TunnelDeviceIP") private var deviceIP = TunnelConstants.defaultDeviceIP
+    @AppStorage("TunnelFakeIP") private var fakeIP = TunnelConstants.defaultFakeIP
+    @AppStorage("TunnelSubnetMask") private var subnetMask = TunnelConstants.defaultSubnetMask
 
     var body: some View {
         DashboardCard {
@@ -1001,15 +1041,15 @@ struct ConnectionStatsView: View {
                     .foregroundColor(.secondary)
 
                 ConnectionInfoRow(
-                    title: "local_device_ip",
+                    title: "tunnel_ip",
                     value: deviceIP,
-                    icon: "desktopcomputer"
+                    icon: "point.3.filled.connected.trianglepath.dotted"
                 )
 
                 ConnectionInfoRow(
-                    title: "tunnel_ip",
+                    title: "device_ip",
                     value: fakeIP,
-                    icon: "point.3.filled.connected.trianglepath.dotted"
+                    icon: "desktopcomputer"
                 )
 
                 ConnectionInfoRow(
@@ -1084,9 +1124,9 @@ struct DashboardCard<Content: View>: View {
 struct SettingsView: View {
     @Environment(\.presentationMode) var presentationMode
     @AppStorage("selectedLanguage") private var selectedLanguage = Locale.current.languageCode ?? "en"
-    @AppStorage("TunnelDeviceIP") private var deviceIP = "10.7.0.0"
-    @AppStorage("TunnelFakeIP") private var fakeIP = "10.7.0.1"
-    @AppStorage("TunnelSubnetMask") private var subnetMask = "255.255.255.0"
+    @AppStorage("TunnelDeviceIP") private var deviceIP = TunnelConstants.defaultDeviceIP
+    @AppStorage("TunnelFakeIP") private var fakeIP = TunnelConstants.defaultFakeIP
+    @AppStorage("TunnelSubnetMask") private var subnetMask = TunnelConstants.defaultSubnetMask
     @AppStorage("autoConnect") private var autoConnect = false
     @AppStorage("shownTunnelAlert") private var shownTunnelAlert = false
     @StateObject private var tunnelManager = TunnelManager.shared
@@ -1094,6 +1134,11 @@ struct SettingsView: View {
 
     @State private var showNetworkWarning = false
     @State private var showRestartPopUp = false
+    @State private var isDirty = false
+    @State private var showConfirmAlert = false
+    @State private var initialDeviceIP = ""
+    @State private var initialFakeIP = ""
+    @State private var initialSubnetMask = ""
 
     var body: some View {
         NBNavigationStack {
@@ -1166,18 +1211,51 @@ struct SettingsView: View {
                     dismissButton: .cancel(Text("understand_button")) {
                         shownTunnelAlert = true
 
-                        deviceIP = "10.7.0.0"
-                        fakeIP = "10.7.0.1"
-                        subnetMask = "255.255.255.0"
+                        deviceIP = TunnelConstants.defaultDeviceIP
+                        fakeIP = TunnelConstants.defaultFakeIP
+                        subnetMask = TunnelConstants.defaultSubnetMask
                     }
                 )
+            }
+            .alert(isPresented: $showConfirmAlert) {
+                Alert(
+                    title: Text("Settings Saved"),
+                    message: Text("VPN configuration has been updated successfully."),
+                    dismissButton: .default(Text("OK")) {
+                        dismiss()
+                    }
+                )
+            }
+            .onAppear {
+                initialDeviceIP = deviceIP
+                initialFakeIP = fakeIP
+                initialSubnetMask = subnetMask
+                isDirty = false
             }
             .navigationTitle(Text("settings"))
             .tvOSNavigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("done") {
-                        dismiss()
+                if isDirty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("cancel") {
+                            deviceIP = initialDeviceIP
+                            fakeIP = initialFakeIP
+                            subnetMask = initialSubnetMask
+                            dismiss()
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("confirm") {
+                            let isRunning = tunnelManager.tunnelStatus == .connected || tunnelManager.tunnelStatus == .connecting
+                            tunnelManager.updateConfigAndRestart(shouldRestart: isRunning)
+                            showConfirmAlert = true
+                        }
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("done") {
+                            dismiss()
+                        }
                     }
                 }
             }
@@ -1197,14 +1275,9 @@ struct SettingsView: View {
                 .foregroundColor(.secondary)
                 .keyboardType(.numbersAndPunctuation)
                 .onChange(of: text.wrappedValue) { _ in
+                    isDirty = true
                     if !shownTunnelAlert {
                         showNetworkWarning = true
-                    }
-
-                    tunnelManager.vpnManager?.saveToPreferences { error in
-                        if let error = error {
-                            VPNLogger.shared.log(error.localizedDescription)
-                        }
                     }
                 }
         }
