@@ -562,7 +562,7 @@ class TunnelManager: ObservableObject {
             manager.isEnabled = true
             
             manager.saveToPreferences { [weak self] error in
-                guard let self = self else { return }
+                guard self != nil else { return }
                 if let error = error {
                     VPNLogger.shared.log("Error saving updated preferences: \(error.localizedDescription)")
                     return
@@ -1235,26 +1235,30 @@ struct SettingsView: View {
             .navigationTitle(Text("settings"))
             .tvOSNavigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if isDirty {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("cancel") {
-                            deviceIP = initialDeviceIP
-                            fakeIP = initialFakeIP
-                            subnetMask = initialSubnetMask
-                            dismiss()
+                ToolbarItem(placement: .topBarTrailing) {
+                    Group {
+                        if isDirty {
+                            Button("confirm") {
+                                let isRunning = tunnelManager.tunnelStatus == .connected || tunnelManager.tunnelStatus == .connecting
+                                tunnelManager.updateConfigAndRestart(shouldRestart: isRunning)
+                                showConfirmAlert = true
+                            }
+                        } else {
+                            Button("done") {
+                                dismiss()
+                            }
                         }
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("confirm") {
-                            let isRunning = tunnelManager.tunnelStatus == .connected || tunnelManager.tunnelStatus == .connecting
-                            tunnelManager.updateConfigAndRestart(shouldRestart: isRunning)
-                            showConfirmAlert = true
-                        }
-                    }
-                } else {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("done") {
-                            dismiss()
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Group {
+                        if isDirty {
+                            Button("cancel") {
+                                deviceIP = initialDeviceIP
+                                fakeIP = initialFakeIP
+                                subnetMask = initialSubnetMask
+                                dismiss()
+                            }
                         }
                     }
                 }
